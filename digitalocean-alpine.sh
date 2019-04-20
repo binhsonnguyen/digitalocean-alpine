@@ -3,99 +3,45 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+logfile="/tmp/digitalocean-alpine.log"
+
 if [ "$1" = "--step-chroot" ]; then
+	printf "" > "$logfile"
 
-	echo -n "  Adding Digital Ocean init script..." >&2
-	cat <<EOF > /etc/init.d/digitalocean
-#!/sbin/openrc-run
+	printf "  Installing packages..." >&2
 
-description="Loads Digital Ocean droplet configuration"
-
-required_files="/media/cdrom/digitalocean_meta_data.json"
-
-depend() {
-	need localmount
-	before network
-	before hostname
-}
-
-start() {
-	ebegin "Loading Digital Ocean configuration"
-	if ! which jq >/dev/null 2>&1; then
-		eend 1 "jq is not installed"
-	fi
-
-	hostname="\$(jq -jre '.hostname' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-	if [ \$? -eq 0 ]; then
-		echo "\$hostname" > /etc/hostname
-	else
-		ewarn "Could not read hostname"
-	fi
-
-	f="/etc/network/interfaces"
-
-	echo "auto lo" > "\$f"
-	echo "iface lo inet loopback" >> "\$f"
-
-	ip_addr="\$(jq -jre '.interfaces.public[0].ipv4.ip_address' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-	ip_netmask="\$(jq -jre '.interfaces.public[0].ipv4.netmask' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-	ip_gateway="\$(jq -jre '.interfaces.public[0].ipv4.gateway' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-
-	echo >> "\$f"
-	echo "auto eth0" >> "\$f"
-	echo "iface eth0 inet static" >> "\$f"
-	echo "	address \$ip_addr" >> "\$f"
-	echo "	netmask \$ip_netmask" >> "\$f"
-	echo "	gateway \$ip_gateway" >> "\$f"
-
-	ip_addr="\$(jq -jre '.interfaces.public[0].ipv6.ip_address' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-	ip_cidr="\$(jq -jre '.interfaces.public[0].ipv6.cidr' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-	ip_gateway="\$(jq -jre '.interfaces.public[0].ipv6.gateway' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-
-	if [ -n "\$id_addr" ]; then
-		modprobe ipv6
-
-		echo >> "\$f"
-		echo "iface eth0 inet6 static" >> "\$f"
-		echo "	address \$id_addr" >> "\$f"
-		echo "	netmask \$ip_cidr" >> "\$f"
-		echo "	gateway \$ip_gateway" >> "\$f"
-		echo "	pre-up echo 0 > /proc/sys/net/ipv6/conf/eth0/accept_ra" >> "\$f"
-	fi
-
-	ip_addr="\$(jq -jre '.interfaces.private[0].ipv4.ip_address' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-	ip_netmask="\$(jq -jre '.interfaces.private[0].ipv4.netmask' /media/cdrom/digitalocean_meta_data.json 2>/dev/null)"
-
-	if [ -n "\$ip_addr" ]; then
-		echo >> "\$f"
-		echo "auto eth1" >> "\$f"
-		echo "iface eth1 inet static" >> "\$f"
-		echo "	address \$ip_addr" >> "\$f"
-		echo "	netmask \$ip_netmask" >> "\$f"
-	fi
-
-	eend 0
-}
+	cat <<EOF > /etc/apk/keys/layeh.com-5b313ebb.rsa.pub
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8OZrGEUMGjd2oAkYb+qu
+rIT7k5FFS5zP6v/YwOOmbT4iQMHlkEP/Aj1PhKZt4FiirFm3fpVKjJa9uPeWRVC4
+eqZ+o9e5xm+2Sb8+Ljn617y2Yzb5kxRyE+1pOuA9WfROZdE+VNvkgcReql6tu19F
+qHj+hwCf3vNsTFeDiiyFKH4UAATR6eolKHGRqk66L3nbRlHvZbODqUcyOeUEXKp7
+ntnM2l6VIxMDHCxbZ9/cu4o/KjW2iT3802D4EWxPT3eksdZERgSVPTJrKskMzey+
+5rqLXTu2NU+V7E+UjQ6hlavc2139CQb3y4smmdpzQTnmUfg281kb9Be0KIDfcOdR
+VwIDAQAB
+-----END PUBLIC KEY-----
 EOF
-	chmod +x /etc/init.d/digitalocean
+	echo "https://cdn.layeh.com/alpine/3.9/" >> /etc/apk/repositories
+
+	if ! apk add --no-cache alpine-base linux-virt syslinux grub grub-bios e2fsprogs eudev openssh rng-tools rng-tools-openrc digitalocean-alpine >>"$logfile" 2>>"$logfile"; then
+		echo
+		exit 1
+	fi
+
 	echo " Done" >&2
 
-	echo -n "  Installing packages..." >&2
-	apk update >/dev/null 2>&1
-	apk add alpine-base linux-virthardened syslinux grub grub-bios e2fsprogs jq >/dev/null 2>&1
-	echo " Done" >&2
-
-	echo -n "  Configuring services..." >&2
-	setup-sshd -c openssh >/dev/null 2>&1
+	printf "  Configuring services..." >&2
 
 	rc-update add --quiet hostname boot
 	rc-update add --quiet networking boot
 	rc-update add --quiet urandom boot
 	rc-update add --quiet crond default
 	rc-update add --quiet swap boot
+	rc-update add --quiet udev sysinit
+	rc-update add --quiet udev-trigger sysinit
+	rc-update add --quiet sshd default
 	rc-update add --quiet digitalocean boot
-
-	sed -i -r -e 's/^UsePAM yes$/#\1/' /etc/ssh/sshd_config
+	rc-update add --quiet rngd boot
 
 	sed -i -r -e 's/^(tty[2-6]:)/#\1/' /etc/inittab
 
@@ -103,17 +49,23 @@ EOF
 
 	echo " Done" >&2
 
-	echo -n "  Installing bootloader..." >&2
+	printf "  Installing bootloader..." >&2
 
-	grub-install /dev/vda >/dev/null 2>&1
-	grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1
+	if ! grub-install /dev/vda >>"$logfile" 2>>"$logfile"; then
+		echo
+		exit 1
+	fi
+	if ! grub-mkconfig -o /boot/grub/grub.cfg >>"$logfile" 2>>"$logfile"; then
+		echo
+		exit 1
+	fi
 
 	sync
 	echo " Done" >&2
 
 	rm -f "$0"
 
-	exit
+	exit 0
 fi
 
 if [ "$1" != "--rebuild" ]; then
@@ -121,8 +73,13 @@ if [ "$1" != "--rebuild" ]; then
 	echo "   Rebuild the current droplet with Alpine Linux" >&2
 	echo >&2
 	echo "   WARNING: This is a destructive operation. You will lose your data." >&2
-	echo "            This script has only been tested with Debian 9.3 x64 droplets." >&2
+	echo "            This script has only been tested with Debian 9.7 x64 droplets." >&2
 	exit 1
+fi
+
+if [ -f /etc/alpine-release ]; then
+	echo "digitalocean-alpine: Alpine Linux already installed" >&2
+	exit 0
 fi
 
 if [ "$(id -u)" -ne "0" ]; then
@@ -132,49 +89,56 @@ fi
 
 SCRIPTPATH="$(realpath "$0")"
 
-if [ \! -x "$SCRIPTPATH" ]; then
+if [ ! -x "$SCRIPTPATH" ]; then
 	echo "digitalocean-alpine: script must be executable" >&2
 	exit 1
 fi
 
-echo -n "Downloading Alpine 3.7.0..." >&2
-wget -q -O /tmp/rootfs.tar.gz http://dl-cdn.alpinelinux.org/alpine/v3.7/releases/x86_64/alpine-minirootfs-3.7.0-x86_64.tar.gz
-if [ "$?" -ne 0 ]; then
-	echo "Could not download Alpine. Exiting." >&2
+printf "Downloading Alpine 3.9.3..." >&2
+if ! wget -q -O /tmp/rootfs.tar.gz http://dl-cdn.alpinelinux.org/alpine/v3.9/releases/x86_64/alpine-minirootfs-3.9.3-x86_64.tar.gz; then
+	echo " Failed!" >&2
 	exit 1
 fi
 echo " Done" >&2
 
-echo -n "Creating mount points..." >&2
+printf "Verifying SHA256 checksum..." >&2
+if ! echo "b406404ce362ef0e104f4b85a3d28aef1750a7b8e2a607056e9c35c06a314750  /tmp/rootfs.tar.gz" | sha256sum -c >/dev/null 2>&1; then
+	echo " Failed!" >&2
+	exit 1
+fi
+echo " Done" >&2
+
+printf "Creating mount points..." >&2
 umount -a >/dev/null 2>&1
 mount -o rw,remount --make-rprivate /dev/vda1 /
 mkdir /tmp/tmpalpine
 mount none /tmp/tmpalpine -t tmpfs
 echo " Done" >&2
 
-echo -n "Extracting Alpine..." >&2
+printf "Extracting Alpine..." >&2
 tar xzf /tmp/rootfs.tar.gz -C /tmp/tmpalpine
 cp "$SCRIPTPATH" /tmp/tmpalpine/tmp/digitalocean-alpine.sh
 echo " Done" >&2
 
-echo -n "Copying existing droplet configuration..." >&2
+printf "Copying existing droplet configuration..." >&2
 cp /etc/fstab /tmp/tmpalpine/etc
 cp /etc/hostname /tmp/tmpalpine/etc
 cp /etc/resolv.conf /tmp/tmpalpine/etc
 grep -v ^root: /tmp/tmpalpine/etc/shadow > /tmp/tmpalpine/etc/shadow.bak
 mv /tmp/tmpalpine/etc/shadow.bak /tmp/tmpalpine/etc/shadow
 grep ^root: /etc/shadow >> /tmp/tmpalpine/etc/shadow
-cp -r /etc/ssh /tmp/tmpalpine/etc
+mkdir -p /tmp/tmpalpine/etc/ssh
+cp -r /etc/ssh/ssh_host_* /tmp/tmpalpine/etc/ssh
 cp -r /root/.ssh /tmp/tmpalpine/root
 echo " Done" >&2
 
-echo -n "Changing to new root..." >&2
+printf "Changing to new root..." >&2
 mkdir /tmp/tmpalpine/oldroot
 pivot_root /tmp/tmpalpine /tmp/tmpalpine/oldroot
-cd /
+cd / || exit 1
 echo " Done" >&2
 
-echo -n "Rebuilding file systems..." >&2
+printf "Rebuilding file systems..." >&2
 mount --move /oldroot/dev /dev
 mount --move /oldroot/proc /proc
 mount --move /oldroot/sys /sys
@@ -193,9 +157,12 @@ mount -o bind /dev /oldroot/dev
 echo " Done" >&2
 
 echo "chroot configuration..." >&2
-chroot /oldroot /bin/ash /tmp/digitalocean-alpine.sh --step-chroot
+if ! chroot /oldroot /bin/ash /tmp/digitalocean-alpine.sh --step-chroot; then
+	echo "ERROR: could not install Alpine Linux. See /oldroot$logfile" >&2
+	exit 1
+fi
 
-echo "Rebooting system. You should be able to reconnect shortly."  >&2
+echo "Rebooting system. You should be able to reconnect shortly." >&2
 reboot
 sleep 1
 reboot
